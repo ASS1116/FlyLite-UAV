@@ -1,0 +1,308 @@
+import numpy as np
+from keras import layers
+from keras.layers import Input, Add, Dense, Activation, ZeroPadding2D, BatchNormalization, Flatten, Conv2D, AveragePooling2D, MaxPooling2D, GlobalMaxPooling2D
+from keras.models import Model, load_model
+from keras.preprocessing import image
+#from tensorflow.keras.layers import Dropout
+from keras.layers import Dropout
+from keras.layers import Layer
+#import tensorflow_addons as tfa
+
+from keras.utils import plot_model
+from keras.models import Model
+
+#from keras.utils import layer_utils
+#from keras.utils.data_utils import get_file
+from keras.applications.imagenet_utils import preprocess_input
+#import pydot
+from IPython.display import SVG
+#from keras.utils.vis_utils import model_to_dot
+from keras.utils import plot_model
+
+from keras.initializers import glorot_uniform
+import scipy.misc
+from matplotlib.pyplot import imshow
+
+from keras.initializers import glorot_uniform
+from keras.layers import Input, Add, Dense, Activation, ZeroPadding2D, BatchNormalization, Flatten, Conv2D, AveragePooling2D, MaxPooling2D, GlobalMaxPooling2D
+from tensorflow.keras.layers import (
+    Conv2D, BatchNormalization, Add, GlobalAveragePooling2D,
+    Dense, Multiply, Reshape, Activation, DepthwiseConv2D,
+    Concatenate, Dropout, MaxPooling2D, Lambda
+)
+import tensorflow.keras.backend as K
+from tensorflow.keras.activations import gelu
+
+
+# Ghost module remains unchanged
+def ghost_module(X, out_channels, ratio=2, name_prefix='ghost'):
+    init_channels = int(out_channels / ratio)
+    ghost_channels = out_channels - init_channels
+
+    X1 = Conv2D(init_channels, (1, 1), padding='same', name=name_prefix + '_primary')(X)
+    X1 = BatchNormalization()(X1)
+    X1 = Activation(gelu)(X1)
+
+    X2 = DepthwiseConv2D(kernel_size=3, padding='same', depth_multiplier=1, name=name_prefix + '_ghost_dwc')(X1)
+    X2 = BatchNormalization()(X2)
+    X2 = Activation(gelu)(X2)
+
+    X2 = Conv2D(ghost_channels, (1, 1), padding='same', name=name_prefix + '_ghost_pw')(X2)
+
+    return Concatenate(axis=-1)([X1, X2])
+
+
+# CBAM Attention module (channel + spatial)
+def cbam_block(X, ratio=8, name_prefix='cbam'):
+    channel = X.shape[-1]
+
+    # Channel Attention
+    avg_pool = GlobalAveragePooling2D()(X)
+    max_pool = GlobalAveragePooling2D()(X)
+    shared_dense_one = Dense(channel // ratio, activation='gelu')
+    shared_dense_two = Dense(channel)
+
+    avg_out = shared_dense_two(shared_dense_one(avg_pool))
+    max_out = shared_dense_two(shared_dense_one(max_pool))
+    channel_attention = Activation('sigmoid')(Add()([avg_out, max_out]))
+    channel_attention = Reshape((1, 1, channel))(channel_attention)
+    X = Multiply()([X, channel_attention])
+
+    # Spatial Attention
+    avg_pool = Lambda(lambda x: K.mean(x, axis=3, keepdims=True))(X)
+    max_pool = Lambda(lambda x: K.max(x, axis=3, keepdims=True))(X)
+    concat = Concatenate(axis=3)([avg_pool, max_pool])
+    spatial_attention = Conv2D(1, (7, 7), padding='same', activation='sigmoid')(concat)
+    X = Multiply()([X, spatial_attention])
+
+    return X
+
+
+def identity_block(X, f, filters, stage, block, use_depthwise=True, use_ghost=True):
+    conv_name_base = f'res{stage}{block}_branch'
+    bn_name_base = f'bn{stage}{block}_branch'
+    F1, F2, F3 = filters
+    X_shortcut = X
+
+    # 1st Layer
+    X = Conv2D(F1, (1, 1), strides=(1, 1), padding='valid', name=conv_name_base + '2a')(X)
+    X = BatchNormalization(axis=3, name=bn_name_base + '2a')(X)
+    X = Activation(gelu)(X)
+
+    # 2nd Layer
+    if use_depthwise:
+        X = DepthwiseConv2D(kernel_size=(f, f), strides=(1, 1), padding='same', name=conv_name_base + '2b_dw')(X)
+        X = BatchNormalization(axis=3, name=bn_name_base + '2b_dw')(X)
+        X = Activation(gelu)(X)
+        X = Conv2D(F2, (1, 1), strides=(1, 1), padding='same', name=conv_name_base + '2b_pw')(X)
+    else:
+        X = Conv2D(F2, (f, f), strides=(1, 1), padding='same', name=conv_name_base + '2b')(X)
+
+    X = BatchNormalization(axis=3, name=bn_name_base + '2b')(X)
+    X = Activation(gelu)(X)
+
+    # 3rd Layer
+    X = Conv2D(F3, (1, 1), strides=(1, 1), padding='valid', name=conv_name_base + '2c')(X)
+    X = BatchNormalization(axis=3, name=bn_name_base + '2c')(X)
+
+    # Ghost Convolution
+    if use_ghost:
+        X = ghost_module(X, out_channels=F3, name_prefix=conv_name_base + '_ghost')
+
+    # SE Block
+    se = GlobalAveragePooling2D()(X)
+    se = Dense(F3 // 16, activation='gelu')(se)
+    se = Dense(F3, activation='sigmoid')(se)
+    se = Reshape((1, 1, F3))(se)
+    X = Multiply()([X, se])
+
+    # Add CBAM Attention
+    X = cbam_block(X, name_prefix=conv_name_base + '_cbam')
+
+    # Add Dropout
+    X = Dropout(0.3, name=conv_name_base + '_dropout')(X)
+
+    # Add & Activate
+    X = Add()([X, X_shortcut])
+    X = Activation(gelu)(X)
+
+    return X
+from tensorflow.keras.layers import (
+    Conv2D, DepthwiseConv2D, BatchNormalization, Add,
+    GlobalAveragePooling2D, Dense, Multiply, Reshape,
+    Activation, Concatenate, Dropout, Lambda
+)
+import tensorflow.keras.backend as K
+from tensorflow.keras.activations import gelu
+
+# Ghost Module
+def ghost_module(X, out_channels, ratio=2, name_prefix='ghost'):
+    init_channels = int(out_channels / ratio)
+    ghost_channels = out_channels - init_channels
+
+    X1 = Conv2D(init_channels, (1, 1), padding='same', name=name_prefix + '_primary')(X)
+    X1 = BatchNormalization()(X1)
+    X1 = Activation(gelu)(X1)
+
+    X2 = DepthwiseConv2D(kernel_size=3, padding='same', depth_multiplier=1, name=name_prefix + '_ghost_dw')(X1)
+    X2 = BatchNormalization()(X2)
+    X2 = Activation(gelu)(X2)
+
+    X2 = Conv2D(ghost_channels, (1, 1), padding='same', name=name_prefix + '_ghost_pw')(X2)
+
+    return Concatenate(axis=-1)([X1, X2])
+
+# CBAM Block
+def cbam_block(X, ratio=8, name_prefix='cbam'):
+    channel = X.shape[-1]
+
+    # Channel Attention
+    avg_pool = GlobalAveragePooling2D()(X)
+    max_pool = GlobalAveragePooling2D()(X)
+    shared_dense_one = Dense(channel // ratio, activation='gelu')
+    shared_dense_two = Dense(channel)
+
+    avg_out = shared_dense_two(shared_dense_one(avg_pool))
+    max_out = shared_dense_two(shared_dense_one(max_pool))
+    channel_attention = Activation('sigmoid')(Add()([avg_out, max_out]))
+    channel_attention = Reshape((1, 1, channel))(channel_attention)
+    X = Multiply()([X, channel_attention])
+
+    # Spatial Attention
+    avg_pool = Lambda(lambda x: K.mean(x, axis=3, keepdims=True))(X)
+    max_pool = Lambda(lambda x: K.max(x, axis=3, keepdims=True))(X)
+    concat = Concatenate(axis=3)([avg_pool, max_pool])
+    spatial_attention = Conv2D(1, (7, 7), padding='same', activation='sigmoid')(concat)
+    X = Multiply()([X, spatial_attention])
+
+    return X
+
+
+# Updated convolutional_block with CBAM and Dropout
+def convolutional_block(X, f, filters, stage, block, s=2, use_depthwise=True, use_ghost=True):
+    conv_name_base = f'res{stage}{block}_branch'
+    bn_name_base = f'bn{stage}{block}_branch'
+    
+    F1, F2, F3 = filters
+    X_shortcut = X
+
+    # 1st layer
+    X = Conv2D(F1, (1, 1), strides=(s, s), name=conv_name_base + '2a')(X)
+    X = BatchNormalization(axis=3, name=bn_name_base + '2a')(X)
+    X = Activation(gelu)(X)
+
+    # 2nd layer
+    if use_depthwise:
+        X = DepthwiseConv2D(kernel_size=(f, f), strides=(1, 1), padding='same', name=conv_name_base + '2b_dw')(X)
+        X = BatchNormalization(axis=3, name=bn_name_base + '2b_dw')(X)
+        X = Activation(gelu)(X)
+        X = Conv2D(F2, (1, 1), strides=(1, 1), padding='same', name=conv_name_base + '2b_pw')(X)
+    else:
+        X = Conv2D(F2, (f, f), strides=(1, 1), padding='same', name=conv_name_base + '2b')(X)
+
+    X = BatchNormalization(axis=3, name=bn_name_base + '2b')(X)
+    X = Activation(gelu)(X)
+
+    # 3rd layer
+    X = Conv2D(F3, (1, 1), strides=(1, 1), padding='valid', name=conv_name_base + '2c')(X)
+    X = BatchNormalization(axis=3, name=bn_name_base + '2c')(X)
+
+    # Ghost Convolution
+    if use_ghost:
+        X = ghost_module(X, out_channels=F3, name_prefix=conv_name_base + '_ghost')
+
+    #  SE block
+    se = GlobalAveragePooling2D()(X)
+    se = Dense(F3 // 16, activation='gelu')(se)
+    se = Dense(F3, activation='sigmoid')(se)
+    se = Reshape((1, 1, F3))(se)
+    X = Multiply()([X, se])
+
+    # CBAM block
+    X = cbam_block(X, name_prefix=conv_name_base + '_cbam')
+
+    # Dropout
+    X = Dropout(0.3, name=conv_name_base + '_dropout')(X)
+
+    # Shortcut path
+    X_shortcut = Conv2D(F3, (1, 1), strides=(s, s), padding='valid', name=conv_name_base + '1')(X_shortcut)
+    X_shortcut = BatchNormalization(axis=3, name=bn_name_base + '1')(X_shortcut)
+
+    # Final merge and activation
+    X = Add()([X, X_shortcut])
+    X = Activation(gelu)(X)
+
+    return X
+from tensorflow.keras.layers import (
+    Input, ZeroPadding2D, Conv2D, BatchNormalization, MaxPooling2D,
+    AveragePooling2D, Flatten, Dense, Activation
+)
+from tensorflow.keras.initializers import glorot_uniform
+from tensorflow.keras.models import Model
+from tensorflow.keras.activations import gelu
+
+
+def ResNet50(input_shape=(64, 64, 1), classes=4, use_depthwise=True, use_ghost=True):
+
+    X_input = Input(input_shape)
+
+    # Stage 0 - Initial Conv Layer
+    X = ZeroPadding2D((3, 3))(X_input)
+    X = Conv2D(64, (7, 7), strides=(2, 2), name='conv1')(X)
+    X = BatchNormalization(axis=3, name='bn_conv1')(X)
+    X = Activation(gelu)(X)
+    X = MaxPooling2D((3, 3), strides=(2, 2))(X)
+
+    # Stage 2
+    X = convolutional_block(X, f=3, filters=[64, 64, 256], stage=2, block='a',
+                            s=1, use_depthwise=use_depthwise, use_ghost=use_ghost)
+    X = identity_block(X, 3, [64, 64, 256], stage=2, block='b',
+                       use_depthwise=use_depthwise, use_ghost=use_ghost)
+    X = identity_block(X, 3, [64, 64, 256], stage=2, block='c',
+                       use_depthwise=use_depthwise, use_ghost=use_ghost)
+
+    # Stage 3
+    X = convolutional_block(X, f=3, filters=[128, 128, 512], stage=3, block='a',
+                            s=2, use_depthwise=use_depthwise, use_ghost=use_ghost)
+    X = identity_block(X, 3, [128, 128, 512], stage=3, block='b',
+                       use_depthwise=use_depthwise, use_ghost=use_ghost)
+    X = identity_block(X, 3, [128, 128, 512], stage=3, block='c',
+                       use_depthwise=use_depthwise, use_ghost=use_ghost)
+    X = identity_block(X, 3, [128, 128, 512], stage=3, block='d',
+                       use_depthwise=use_depthwise, use_ghost=use_ghost)
+
+    # Stage 4
+    X = convolutional_block(X, f=3, filters=[256, 256, 1024], stage=4, block='a',
+                            s=2, use_depthwise=use_depthwise, use_ghost=use_ghost)
+    X = identity_block(X, 3, [256, 256, 1024], stage=4, block='b',
+                       use_depthwise=use_depthwise, use_ghost=use_ghost)
+    X = identity_block(X, 3, [256, 256, 1024], stage=4, block='c',
+                       use_depthwise=use_depthwise, use_ghost=use_ghost)
+    X = identity_block(X, 3, [256, 256, 1024], stage=4, block='d',
+                       use_depthwise=use_depthwise, use_ghost=use_ghost)
+    X = identity_block(X, 3, [256, 256, 1024], stage=4, block='e',
+                       use_depthwise=use_depthwise, use_ghost=use_ghost)
+    X = identity_block(X, 3, [256, 256, 1024], stage=4, block='f',
+                       use_depthwise=use_depthwise, use_ghost=use_ghost)
+
+    # Stage 5
+    X = convolutional_block(X, f=3, filters=[512, 512, 2048], stage=5, block='a',
+                            s=2, use_depthwise=use_depthwise, use_ghost=use_ghost)
+    X = identity_block(X, 3, [512, 512, 2048], stage=5, block='b',
+                       use_depthwise=use_depthwise, use_ghost=use_ghost)
+    X = identity_block(X, 3, [512, 512, 2048], stage=5, block='c',
+                       use_depthwise=use_depthwise, use_ghost=use_ghost)
+
+    # Output Layer
+    X = AveragePooling2D(pool_size=(2, 2), name='avg_pool')(X)
+    X = Flatten()(X)
+    X = Dense(classes, activation='softmax', name=f'fc{classes}',
+              kernel_initializer=glorot_uniform(seed=0))(X)
+
+    model = Model(inputs=X_input, outputs=X, name='ResNet50_GELU_SE_CBAM')
+
+    return model
+model = ResNet50(input_shape=(64, 64, 1), classes=4,
+                 use_depthwise=True, use_ghost=True)
+
+model.summary()
