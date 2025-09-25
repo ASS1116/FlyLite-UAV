@@ -1,3 +1,103 @@
+import numpy as np 
+import pandas as pd 
+import matplotlib.pyplot as plt
+import os
+
+dataset_path = os.listdir('dataset path')
+
+object_types = os.listdir('dataset path')
+#print (room_types)  #what kinds of rooms are in this dataset
+
+print("Types of objects found: ", len(dataset_path))
+
+
+objects = []
+
+for item in object_types:
+ # Get all the file names
+ all_objects = os.listdir('D:/HBTU PHD/DATASET/collision/collision_new/' + '/' +item)
+ #print(all_shoes)
+
+ # Add them to the list
+ for object in all_objects:
+    objects.append((item, str('D:/HBTU PHD/DATASET/collision/collision_new/' + '/' +item) + '/' + object))
+    #print(rooms[:1])
+
+# Build a dataframe        
+objects_df = pd.DataFrame(data=objects, columns=['object type', 'image'])
+print(objects_df.head())
+print(objects_df.tail())
+
+# Let's check how many samples for each category are present
+print("Total number of objects in the dataset: ", len(objects_df))
+
+object_count = objects_df['object type'].value_counts()
+
+print("objects in each category: ")
+print(object_count)
+
+
+import cv2
+import os
+
+path = 'D:/HBTU PHD/DATASET/collision/collision_new/'  
+im_size = 64
+
+images = []
+labels = []
+
+object_types = os.listdir(path)  # Auto-detect object type folders
+
+for i in object_types:
+    data_path = os.path.join(path, str(i))
+    filenames = [f for f in os.listdir(data_path) if f.lower().endswith(('.jpg', '.png', '.jpeg'))]
+
+    for f in filenames:
+        img_path = os.path.join(data_path, f)
+        img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)  # Read as grayscale
+        if img is not None:
+            img = cv2.resize(img, (im_size, im_size))
+            images.append(img)
+            labels.append(i)
+        else:
+            print(f"Could not read image: {img_path}")
+
+labels
+images = np.array(images)
+images.shape 
+
+images = images.astype('float32') / 255.0
+
+
+from sklearn.preprocessing import LabelEncoder , OneHotEncoder
+y=objects_df['object type'].values
+#print(y[:5])
+
+# for y
+y_labelencoder = LabelEncoder ()
+y = y_labelencoder.fit_transform (y)
+#print (y)
+
+y=y.reshape(-1,1)
+onehotencoder = OneHotEncoder(sparse_output=False)
+#onehotencoder = OneHotEncoder(categorical_features=[0])  #Converted  scalar output into vector output where the correct class will be 1 and other will be 0
+Y= onehotencoder.fit_transform(y)
+Y.shape  #(393, 3)
+
+from sklearn.utils import shuffle
+from sklearn.model_selection import train_test_split
+
+
+images, Y = shuffle(images, Y, random_state=1)
+
+train_x, test_x, train_y, test_y = train_test_split(images, Y, test_size=0.05, random_state=415)
+
+#inpect the shape of the training and testing.
+print(train_x.shape)
+print(train_y.shape)
+print(test_x.shape)
+print(test_y.shape)
+
 import numpy as np
 from keras import layers
 from keras.layers import Input, Add, Dense, Activation, ZeroPadding2D, BatchNormalization, Flatten, Conv2D, AveragePooling2D, MaxPooling2D, GlobalMaxPooling2D
