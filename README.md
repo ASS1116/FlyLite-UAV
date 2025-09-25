@@ -43,7 +43,4 @@ To reproduce the experiments or results:
 For questions or collaborations, contact: [amit.sh.9002@gmail.com].
 
 
----
-
-If you want, I can also make an **even shorter, one-page version** that’s perfect for a clean GitHub profile. Do you want me to do that?
 
